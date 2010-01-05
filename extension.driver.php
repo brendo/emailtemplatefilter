@@ -325,7 +325,7 @@
 				$data->appendChild($params);
 			}
 			
-			self::$page->__processDatasources($template['datasources'], $data, array(
+			self::$page->processDatasources($template['datasources'], $data, array(
 				'etf-entry-id'	=> $entry_id
 			));
 			
