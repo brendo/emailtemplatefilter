@@ -3,8 +3,8 @@
 	require_once LIB . '/class.entry.php';
 	require_once LIB . '/class.event.php';
 
-	class EmailEvent extends Event {
-		
+	class Event_EmailTemplate extends Event {
+
 		public function __construct(){
 			// Set Default Values
 			$this->_about = new StdClass;
@@ -25,7 +25,13 @@
 		}
 
 		public function getTemplate(){
-			return EXTENSIONS . '/emailtemplatefilter/templates/template.event.php';
+			return EXTENSIONS . '/event_emailtemplate/templates/template.event.php';
+		}
+		
+		public function prepareDestinationColumnValue(){
+			return Widget::TableData(__('N/A'), array(
+				'class' => 'inactive'
+			));
 		}
 
 	/*-----------------------------------------------------------------------*/
@@ -46,9 +52,10 @@
 
 				if(isset($data['parameters']) && is_array($data['parameters']) || !empty($data['parameters'])){
 					$parameters = array();
-					foreach($data['parameters']['param'] as $index => $param){
-						$parameters[$param] = $data['parameters']['value'][$index];
+					foreach($data['parameters'] as $index => $param){
+						$parameters[$param['param']] = $param['value'];
 					}
+					
 					$this->parameters()->parameters = $parameters;
 				}
 			}
@@ -56,6 +63,7 @@
 
 		public function view(SymphonyDOMElement $wrapper, MessageStack $errors) {
 			$page = Administration::instance()->Page;
+			$page->insertNodeIntoHead($page->createScriptElement(URL . '/extensions/event_emailtemplate/assets/view.js'));
 
 			$layout = new Layout();
 			$column_1 = $layout->createColumn(Layout::SMALL);
@@ -170,39 +178,51 @@
 			}
 
 			$select = Widget::Select('fields[view]', $options);
+			$select->setAttribute('id', 'context');
 
 			$label->appendChild($select);
 			$fieldset->appendChild($label);
 
 			// URL Parameters:
-			$label = $page->createElement('h4', __('Parameters'));
-			$fieldset->appendChild($label);
-
-			$this->appendDuplicator($fieldset, $this->parameters()->parameters);
+			foreach(new ViewIterator as $view) {
+				
+				if(!isset($view->about()->{'url-parameters'})) continue;
+				
+				$this->appendDuplicator(
+					$fieldset, $view,
+					($this->parameters()->view == $view->path) ? $this->parameters()->parameters : null
+				);
+			}
 
 			$column_3->appendChild($fieldset);
 
 			$layout->appendTo($wrapper);
 		}
 
-		protected function appendDuplicator(SymphonyDOMElement $wrapper, array $items = null) {
+		protected function appendDuplicator(SymphonyDOMElement $wrapper, View $view, array $items = null) {
 			$document = $wrapper->ownerDocument;
 
 			$duplicator = new Duplicator(__('Add Item'));
+			$duplicator->addClass('parameter-duplicator context context-' . str_replace("/","_", $view->path));
+
 			$item = $duplicator->createTemplate(__('Parameter'));
 			$label = Widget::Label(__('Name'));
-			$options = array(
-				array(
-					'entry-id', true, 'entry-id'
-				)
-			);
+			$options = array();
+			
+			if(isset($view->about()->{'url-parameters'}) && !empty($view->about()->{'url-parameters'})) {
+				foreach($view->about()->{'url-parameters'} as $index => $p) {
+					$options[] = array(
+						$p, false, $p
+					);
+				}
+			}
 
-			$label->appendChild(Widget::Select('fields[parameters][param][]', $options));
+			$label->appendChild(Widget::Select('param', $options));
 			$item->appendChild($label);
 
 			$label = Widget::Label(__('Value'));
 			$label->appendChild(Widget::Textarea(
-				'fields[parameters][value][]', null,
+				'value', null,
 				array(
 					'rows'	=> 2
 				)
@@ -215,16 +235,25 @@
 			$item->appendChild($help);
 
 			if(is_array($items)){
-				foreach($items as $param => $xpath) {
+				foreach($items as $param => $value) {
 					$item = $duplicator->createInstance(__('Parameter'));
 					$label = Widget::Label(__('Parameter'));
+					
+					$options = array();
+					if(isset($view->about()->{'url-parameters'}) && !empty($view->about()->{'url-parameters'})) {
+						foreach($view->about()->{'url-parameters'} as $p) {
+							$options[] = array(
+								$p, $param == $p, $p
+							);							
+						}
+					}					
 
-					$label->appendChild(Widget::Select('fields[parameters][param][]', $options));
+					$label->appendChild(Widget::Select('param', $options));
 					$item->appendChild($label);
 
 					$label = Widget::Label(__('Value'));
 					$label->appendChild(Widget::Textarea(
-						'fields[parameters][value][]', General::sanitize($xpath),
+						'value', General::sanitize($value),
 						array(
 							'rows'	=> 2
 						)
@@ -247,7 +276,7 @@
 		}
 
 		public function trigger(Register $ParameterOutput, array $postdata){
-			Extension_EmailTemplateFilter::$events[] = $this;
+			Extension_Event_EmailTemplate::$events[] = $this;
 		}
 
 	}

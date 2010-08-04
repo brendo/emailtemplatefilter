@@ -1,8 +1,8 @@
 <?php
 	
-	require_once EXTENSIONS . '/emailtemplatefilter/lib/class.event.php';
+	require_once EXTENSIONS . '/event_emailtemplate/lib/class.event.php';
 	
-	Final Class Event%1$s extends EmailEvent {
+	Final Class Event%1$s extends Event_EmailTemplate {
 		public function __construct(){
 			parent::__construct();
 			
