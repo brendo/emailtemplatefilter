@@ -1,57 +1,183 @@
 <?php
+	require_once 'lib/class.event.php';
 
 	Class Extension_EmailTemplateFilter implements iExtension {
+
+		public static $document = null;
+		public static $events = array();
+
 		public function about() {
 			return (object)array(
 				'name'			=> 'Email Template Filter',
 				'version'		=> '2.0.0',
-				'release-date'	=> '2010-08-02',
+				'release-date'	=> '2010-08-04',
 				'author'		=> (object)array(
 					'name'			=> 'Rowan Lewis, Brendan Abbott',
 					'website'		=> 'http://symphony-cms.com/',
 					'email'			=> 'me@rowan-lewis.com'
 				),
 				'type'			=> array(
-					'Email'
+					'Email', 'Event'
+				),
+				'provides'		=> array(
+					'datasource_template'
 				),
 			);
 		}
+
+	/*-------------------------------------------------------------------------
+		Definition:
+	-------------------------------------------------------------------------*/
+		public function uninstall() {
+			Symphony::Database()->query("DROP TABLE IF EXISTS `tbl_etf_logs`");
+		}
+
+		public function install() {
+			Symphony::Database()->query("
+				CREATE TABLE IF NOT EXISTS `tbl_etf_logs` (
+					`id` int(11) NOT NULL auto_increment,
+					`template_id` int(11) NOT NULL,
+					`entry_id` int(11) NOT NULL,
+					`success` enum('yes','no') NOT NULL,
+					`date` datetime NOT NULL,
+					`subject` varchar(255),
+					`sender` varchar(255),
+					`senders` varchar(255),
+					`recipients` varchar(255),
+					`message` text,
+					PRIMARY KEY (`id`)
+				) TYPE=MyISAM
+			");
+
+			return true;
+		}
+
+		public function getSubscribedDelegates() {
+			return array(
+				array(
+					'page'		=> '/frontend/',
+					'delegate'	=> 'FrontendTemplatePreRender',
+					'callback'	=> 'triggerEmail'
+				)
+			);
+		}
+
 		/*
-		public function __construct() {
-			Field::load(EXTENSIONS . '/field_selectbox/fields/field.select.php');
-			Field::load(EXTENSIONS . '/field_textbox/fields/field.textbox.php');
+		public function fetchNavigation() {
+			return array(
+				array(
+					'location'	=> 250,
+					'name'		=> 'Emails',
+					'children'	=> array(
+						array(
+							'name'		=> 'Logs',
+							'link'		=> '/logs/'
+						)
+					)
+				)
+			);
 		}
 		*/
 
-		public function sendEmail($entry_id, $template_id) {
-			header('content-type: text/plain');
+		public function getEventTypes() {
+			return array(
+				(object)array(
+					'class'		=> 'EmailEvent',
+					'name'		=> __('Email Template')
+				)
+			);
+		}
 
-			$template = $this->getTemplate($template_id);
-			$conditions = $this->getConditions($template_id);
-			$data = $this->getData($template, $entry_id);
-			$xpath = new DOMXPath($data);
-			$email = null;
+	/*-------------------------------------------------------------------------
+		Utility functions:
+	-------------------------------------------------------------------------*/
 
-			// Find condition:
-			foreach ($conditions as $condition) {
-				if (empty($condition['expression'])) {
-					$email = $condition; break;
-				}
+		public function countLogs() {
+			return Symphony::Database()->query("
+				SELECT
+					COUNT(l.id) AS `total`
+				FROM
+					`tbl_etf_logs` AS l
+			")->current()->total;
+		}
 
-				$results = $xpath->query($condition['expression']);
+		public function getLogs($page) {
+			$rows = Symphony::Configuration()->core()->symphony->{'pagination-maximum-rows'};
 
-				if ($results->length > 0) {
-					/*
-					foreach ($results as $node) {
-						var_dump($data->saveXML($node));
-					}
-					*/
+			$results = Symphony::Database()->query(sprintf("
+					SELECT
+						l.*
+					FROM
+						`tbl_etf_logs` AS l
+					ORDER BY
+						l.date DESC
+					LIMIT %d, %d
+				", ($page - 1) * $rows, $rows
+			));
 
-					$email = $condition; break;
+			return ($results->valid()) ? $results : false;
+		}
+
+		public function getLog($log_id) {
+			return Symphony::Database()->query("
+				SELECT
+					l.*
+				FROM
+					`tbl_etf_logs` AS l
+				WHERE
+					l.id = '{$log_id}'
+				LIMIT 1
+			")->current();
+		}
+
+	/*-------------------------------------------------------------------------
+		Trigger functions:
+	-------------------------------------------------------------------------*/
+
+		public function triggerEmail($context) {
+			$document = $context['document'];
+			$xpath = new DOMXPath($document);
+
+			if($xpath->evaluate('boolean(//parameters/document-render)')) return;
+
+			foreach(self::$events as $event) {
+				if($xpath->evaluate('boolean(' . $event->parameters()->trigger . ')')) {
+
+					$entry_id = $xpath->evaluate('number(' . $event->parameters()->trigger . ')');
+
+					self::$document = $document;
+
+					$this->sendEmail($entry_id,	$event->parameters());
 				}
 			}
+		}
 
-			if (is_null($email)) return;
+		public function getTemplate($path, $entry_id) {
+			try {
+				$view = View::loadFromPath($path);
+
+				Frontend::Parameters()->{'entry-id'} = $entry_id;
+				Frontend::Parameters()->{'document-render'} = true;
+
+				return $view->render(Frontend::Parameters());
+			}
+			catch (ViewException $ex) {
+				// oh oh.
+				throw $ex;
+			}
+		}
+
+		public function sendEmail($entry_id, $template) {
+			header('content-type: text/plain');
+			$xpath = new DOMXPath(self::$document);
+			$email = (array)$template;
+
+			//	Remove junk
+			unset($email['root-element']);
+			unset($email['trigger']);
+			unset($email['view']);
+			unset($email['parameters']);
+			unset($email['pathname']);
 
 			// Replace {xpath} queries:
 			foreach ($email as $key => $value) {
@@ -81,37 +207,11 @@
 				$email[$key] = $content;
 			}
 
-			// Find generator:
-			$page = $this->getPage($email['page']);
-			$generator = URL;
-
-			if ($page->path) $generator .= '/' . $page->path;
-
-			$generator .= '/' . $page->handle;
-			$generator = rtrim($generator, '/');
-			$params = trim($email['params'], '/');
-			$email['generator'] = "{$generator}/{$params}/";
-
 			// Add values:
-			$email['message'] = (string)file_get_contents($email['generator']);
-			$email['condition_id'] = $email['id'];
+			$email['message'] = (string)$this->getTemplate($template->view, $entry_id);
 			$email['entry_id'] = $entry_id;
 
-			// Remove junk:
-			unset($email['id']);
-			unset($email['expression']);
-			unset($email['type']);
-			unset($email['sortorder']);
-			unset($email['page']);
-			unset($email['params']);
-			unset($email['generator']);
-
-			//var_dump($data->saveXML());
-			//var_dump(self::$params);
-			//var_dump($email);
-			//exit;
-
-			// Send the email:
+			// Determine if we are going to use the SMTP mailer, or the inbuilt Symphony mail function:
 			try {
 				$smtp = (Extension::status('smtp_email_library') == Extension::STATUS_ENABLED);
 			}
@@ -119,39 +219,40 @@
 				$smtp = false;
 			}
 
+			// Send the email:
 			if($smtp) {
 				require_once EXTENSIONS . '/smtp_email_library/lib/class.email.php';
 
-				$email = new LibraryEmail;
+				$libEmail = new LibraryEmail;
 
-				$email->to = $email['recipients'];
-				$email->from = sprintf('%s <%s>', $email['sender'], $email['senders']);
-				$email->subject = $email['subject'];
-				$email->message = $email['message'];
-				$email->setHeader('Reply-To', sprintf('%s <%s>', $email['sender'], $email['senders']));
+				$libEmail->to = $email['recipient-addresses'];
+				$libEmail->from = sprintf('%s <%s>', $email['sender-name'], $email['sender-addresses']);
+				$libEmail->subject = $email['subject'];
+				$libEmail->message = $email['message'];
+				$libEmail->setHeader('Reply-To', sprintf('%s <%s>', $email['sender-name'], $email['sender-addresses']));
 
 				try{
-					$return = $email->send();
+					$return = $libEmail->send();
 				}
 				catch(Exception $e){
+					throw $e;
 					$return = false;
 				}
 			}
 			else {
 				$return = General::sendEmail(
-					$email['recipients'],  $email['senders'], $email['sender'], $email['subject'], $email['message'], array(
-						'mime-version'	=> '1.0',
+					$email['recipient-addresses'],  $email['sender-addresses'], $email['sender-name'], $email['subject'], $email['message'], array(
 						'content-type'	=> 'text/html; charset="UTF-8"'
 					)
 				);
 			}
 
 			// Log the email:
+			$email['method'] = ($smtp ? "smtp" : "symphony");
 			$email['success'] = ($return ? 'yes' : 'no');
 			$email['date'] = DateTimeObj::get('c');
 
-			Symphony::Database()->insert('tbl_etf_logs', $email);
-
+			//	TODO: Logging
 			return $return;
 		}
 	}
