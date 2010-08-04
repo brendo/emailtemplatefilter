@@ -159,7 +159,10 @@
 				Frontend::Parameters()->{'entry-id'} = $entry_id;
 				Frontend::Parameters()->{'document-render'} = true;
 
-				return $view->render(Frontend::Parameters());
+				return array(
+					'content-type' => $view->about()->{'content-type'},
+					'message' => $view->render(Frontend::Parameters())
+				);
 			}
 			catch (ViewException $ex) {
 				// oh oh.
@@ -168,7 +171,6 @@
 		}
 
 		public function sendEmail($entry_id, $template) {
-			header('content-type: text/plain');
 			$xpath = new DOMXPath(self::$document);
 			$email = (array)$template;
 
@@ -207,8 +209,10 @@
 				$email[$key] = $content;
 			}
 
+			$view = $this->getTemplate($template->view, $entry_id);
+
 			// Add values:
-			$email['message'] = (string)$this->getTemplate($template->view, $entry_id);
+			$email['message'] = (string)$view['message'];
 			$email['entry_id'] = $entry_id;
 
 			// Determine if we are going to use the SMTP mailer, or the inbuilt Symphony mail function:
@@ -230,19 +234,21 @@
 				$libEmail->subject = $email['subject'];
 				$libEmail->message = $email['message'];
 				$libEmail->setHeader('Reply-To', sprintf('%s <%s>', $email['sender-name'], $email['sender-addresses']));
+				$libEmail->setHeader('Content-Type', $view['content-type']);
 
 				try{
 					$return = $libEmail->send();
 				}
 				catch(Exception $e){
-					throw $e;
 					$return = false;
 				}
 			}
-			else {
+
+			//	If SMTP isn't available, or SMTP failed, use the Symphony Mailer
+			if(!$smtp || !$return) {
 				$return = General::sendEmail(
 					$email['recipient-addresses'],  $email['sender-addresses'], $email['sender-name'], $email['subject'], $email['message'], array(
-						'content-type'	=> 'text/html; charset="UTF-8"'
+						'content-type'	=> $view['content-type']
 					)
 				);
 			}
